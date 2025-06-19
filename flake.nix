@@ -18,13 +18,11 @@
         name = "voxy-dev";
 
         buildInputs = with pkgs; [
-          openjdk21         # Java 21 toolchain
-          git               # for cloning, tags, etc.
-          cacerts           # SSL certificates for Gradle downloads
-          # (optional) gradle  # if you ever want to use system Gradle
+          openjdk21
+          git
+          cacert
         ];
 
-        # Ensure JAVA_HOME is set correctly
         shellHook = ''
           export JAVA_HOME=${pkgs.openjdk21.home}
           export PATH=$JAVA_HOME/bin:$PATH
