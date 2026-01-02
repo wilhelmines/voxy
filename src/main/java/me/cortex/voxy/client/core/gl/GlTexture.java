@@ -2,8 +2,6 @@ package me.cortex.voxy.client.core.gl;
 
 import me.cortex.voxy.common.util.TrackedObject;
 
-import static org.lwjgl.opengl.ARBFramebufferObject.glDeleteFramebuffers;
-import static org.lwjgl.opengl.ARBFramebufferObject.glGenFramebuffers;
 import static org.lwjgl.opengl.GL11.GL_RGBA8;
 import static org.lwjgl.opengl.GL11C.*;
 import static org.lwjgl.opengl.GL30.GL_DEPTH24_STENCIL8;
@@ -98,11 +96,18 @@ public class GlTexture extends TrackedObject {
         return this.levels;
     }
 
+    public int getFormat() {
+        this.assertAllocated();
+        return this.format;
+    }
+
     private long getEstimatedSize() {
         this.assertAllocated();
         long elemSize = switch (this.format) {
-            case GL_RGBA8, GL_DEPTH24_STENCIL8 -> 4;
+            case GL_R32UI, GL_RGBA8, GL_DEPTH24_STENCIL8, GL_R32F -> 4;
             case GL_DEPTH_COMPONENT24 -> 4;//TODO: check this is right????
+            case GL_DEPTH_COMPONENT32F -> 4;
+            case GL_DEPTH_COMPONENT32 -> 4;
 
             default -> throw new IllegalStateException("Unknown element size");
         };

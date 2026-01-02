@@ -4,18 +4,17 @@ import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import me.cortex.voxy.client.core.model.IdNotYetComputedException;
 import me.cortex.voxy.client.core.model.ModelBakerySubsystem;
+import me.cortex.voxy.common.thread.Service;
+import me.cortex.voxy.common.thread.ServiceManager;
 import me.cortex.voxy.common.util.Pair;
 import me.cortex.voxy.common.world.WorldEngine;
 import me.cortex.voxy.common.world.WorldSection;
 import me.cortex.voxy.common.world.other.Mapper;
-import me.cortex.voxy.common.thread.ServiceSlice;
-import me.cortex.voxy.common.thread.ServiceThreadPool;
 
 import java.util.List;
 import java.util.concurrent.PriorityBlockingQueue;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.StampedLock;
-import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 
 //TODO: Add a render cache
@@ -51,35 +50,36 @@ public class RenderGenerationService {
     private final AtomicInteger holdingSectionCount = new AtomicInteger();//Used to limit section holding
 
     private final AtomicInteger taskQueueCount = new AtomicInteger();
-    private final PriorityBlockingQueue<BuildTask> taskQueue = new PriorityBlockingQueue<>(320000, (a,b)-> Long.compareUnsigned(a.priority, b.priority));
+    private final PriorityBlockingQueue<BuildTask> taskQueue = new PriorityBlockingQueue<>(5000, (a,b)-> Long.compareUnsigned(a.priority, b.priority));
     private final StampedLock taskMapLock = new StampedLock();
-    private final Long2ObjectOpenHashMap<BuildTask> taskMap = new Long2ObjectOpenHashMap<>(320000);
+    private final Long2ObjectOpenHashMap<BuildTask> taskMap = new Long2ObjectOpenHashMap<>(5000);
 
     private final WorldEngine world;
     private final ModelBakerySubsystem modelBakery;
     private Consumer<BuiltSection> resultConsumer;
     private final boolean emitMeshlets;
 
-    private final ServiceSlice threads;
+    private final Service service;
 
 
-    public RenderGenerationService(WorldEngine world, ModelBakerySubsystem modelBakery, ServiceThreadPool serviceThreadPool, boolean emitMeshlets) {
-        this(world, modelBakery, serviceThreadPool, emitMeshlets, ()->true);
-    }
+    /*
+    public RenderGenerationService(WorldEngine world, ModelBakerySubsystem modelBakery, ServiceManager sm, boolean emitMeshlets) {
+        this(world, modelBakery, sm, emitMeshlets, ()->true);
+    }*/
 
-    public RenderGenerationService(WorldEngine world, ModelBakerySubsystem modelBakery, ServiceThreadPool serviceThreadPool, boolean emitMeshlets, BooleanSupplier taskLimiter) {
+    public RenderGenerationService(WorldEngine world, ModelBakerySubsystem modelBakery, ServiceManager sm, boolean emitMeshlets) {
         this.emitMeshlets = emitMeshlets;
         this.world = world;
         this.modelBakery = modelBakery;
 
-        this.threads = serviceThreadPool.createService("Section mesh generation service", 100, ()->{
+        this.service = sm.createService(()->{
             //Thread local instance of the factory
             var factory = new RenderDataFactory(this.world, this.modelBakery.factory, this.emitMeshlets);
             IntOpenHashSet seenMissed = new IntOpenHashSet(128);
             return new Pair<>(() -> {
                 this.processJob(factory, seenMissed);
             }, factory::free);
-        }, taskLimiter);
+        }, 10, "Section mesh generation service", ()->modelBakery.getProcessingCount()<400||RenderGenerationService.MESH_FAILED_COUNTER.get()<500);
     }
 
     public void setResultConsumer(Consumer<BuiltSection> consumer) {
@@ -141,6 +141,17 @@ public class RenderGenerationService {
             section = task.section;
         }
 
+
+        {//Remove the task from the map, this is done before we check for null sections as well the task map needs to be correct
+            long stamp = this.taskMapLock.writeLock();
+            var rtask = this.taskMap.remove(task.position);
+            if (rtask != task) {
+                this.taskMapLock.unlockWrite(stamp);
+                throw new IllegalStateException();
+            }
+            this.taskMapLock.unlockWrite(stamp);
+        }
+
         if (section == null) {
             if (this.resultConsumer != null) {
                 this.resultConsumer.accept(BuiltSection.empty(task.position));
@@ -150,15 +161,6 @@ public class RenderGenerationService {
         section.assertNotFree();
         BuiltSection mesh = null;
 
-        {
-            long stamp = this.taskMapLock.writeLock();
-            var rtask = this.taskMap.remove(task.position);
-            if (rtask != task) {
-                this.taskMapLock.unlockWrite(stamp);
-                throw new IllegalStateException();
-            }
-            this.taskMapLock.unlockWrite(stamp);
-        }
 
         try {
             mesh = factory.generateMesh(section);
@@ -256,8 +258,8 @@ public class RenderGenerationService {
                 this.taskQueue.add(task);
                 this.taskQueueCount.incrementAndGet();
 
-                if (this.threads.isAlive()) {//Only execute if were not dead
-                    this.threads.execute();//Since we put in queue, release permit
+                if (this.service.isLive()) {//Only execute if were not dead
+                    this.service.execute();//Since we put in queue, release permit
                 }
             }
         }
@@ -280,7 +282,7 @@ public class RenderGenerationService {
 
 
     public void enqueueTask(long pos) {
-        if (!this.threads.isAlive()) {
+        if (!this.service.isLive()) {
             return;
         }
         boolean[] isOurs = new boolean[1];
@@ -296,7 +298,7 @@ public class RenderGenerationService {
             task.updatePriority();
             this.taskQueue.add(task);
             this.taskQueueCount.incrementAndGet();
-            this.threads.execute();
+            this.service.execute();
         }
     }
 
@@ -308,8 +310,8 @@ public class RenderGenerationService {
 
     public void shutdown() {
         //Steal and free as much work as possible
-        while (this.threads.hasJobs()) {
-            int i = this.threads.drain();
+        while (this.service.numJobs() != 0) {
+            int i = this.service.drain();
             if (i == 0) break;
             {
                 long stamp = this.taskMapLock.writeLock();
@@ -329,7 +331,7 @@ public class RenderGenerationService {
         }
 
         //Shutdown the threads
-        this.threads.shutdown();
+        this.service.shutdown();
 
         //Cleanup any remaining data
         while (!this.taskQueue.isEmpty()) {
@@ -352,14 +354,12 @@ public class RenderGenerationService {
     }
 
     private long lastChangedTime = 0;
-    private int failedCounter = 0;
     public void addDebugData(List<String> debug) {
-        if (System.currentTimeMillis()-this.lastChangedTime > 1000) {
-            this.failedCounter = 0;
+        if (System.currentTimeMillis()-this.lastChangedTime > 100) {
+            MESH_FAILED_COUNTER.set(0);
             this.lastChangedTime = System.currentTimeMillis();
         }
-        this.failedCounter += MESH_FAILED_COUNTER.getAndSet(0);
-        debug.add("RSSQ/TFC: " + this.taskQueueCount.get() + "/" + this.failedCounter);//render section service queue, Task Fail Counter
+        debug.add("RSSQ/TFC: " + this.taskQueueCount.get() + "/" + MESH_FAILED_COUNTER.get());//render section service queue, Task Fail Counter
 
     }
 

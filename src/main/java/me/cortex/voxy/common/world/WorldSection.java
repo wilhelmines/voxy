@@ -5,11 +5,8 @@ import me.cortex.voxy.commonImpl.VoxyCommon;
 
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
-import java.util.ArrayDeque;
 import java.util.Arrays;
-import java.util.Deque;
 import java.util.concurrent.ConcurrentLinkedDeque;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 //Represents a loaded world section at a specific detail level
@@ -125,7 +122,7 @@ public final class WorldSection {
     public int acquire(int count) {
         int state = ((int)  ATOMIC_STATE_HANDLE.getAndAdd(this, count<<1)) + (count<<1);
         if ((state & 1) == 0) {
-            throw new IllegalStateException("Tried to acquire unloaded section: " + WorldEngine.pprintPos(this.key));
+            throw new IllegalStateException("Tried to acquire unloaded section: " + WorldEngine.pprintPos(this.key) + " obj: " + System.identityHashCode(this));
         }
         return state>>1;
     }

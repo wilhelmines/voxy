@@ -6,7 +6,6 @@ import com.google.gson.GsonBuilder;
 import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.common.util.cpu.CpuLayout;
 import me.cortex.voxy.commonImpl.VoxyCommon;
-import net.caffeinemc.mods.sodium.client.gui.options.storage.OptionStorage;
 import net.fabricmc.loader.api.FabricLoader;
 
 import java.io.FileReader;
@@ -15,7 +14,7 @@ import java.lang.reflect.Modifier;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
-public class VoxyConfig implements OptionStorage<VoxyConfig> {
+public class VoxyConfig {
     private static final Gson GSON = new GsonBuilder()
             .setFieldNamingPolicy(FieldNamingPolicy.LOWER_CASE_WITH_UNDERSCORES)
             .setPrettyPrinting()
@@ -28,12 +27,12 @@ public class VoxyConfig implements OptionStorage<VoxyConfig> {
     public boolean enableRendering = true;
     public boolean ingestEnabled = true;
     public int sectionRenderDistance = 16;
-    public int serviceThreads = (int) Math.max(CpuLayout.CORES.length/1.5, 1);
+    public int serviceThreads = (int) Math.max(CpuLayout.getCoreCount()/1.5, 1);
     public float subDivisionSize = 64;
-    public boolean renderVanillaFog = false;
-    public boolean renderStatistics = false;
+    public boolean useEnvironmentalFog = true;
+    public boolean dontUseSodiumBuilderThreads = false;
 
-    public static VoxyConfig loadOrCreate() {
+    private static VoxyConfig loadOrCreate() {
         if (VoxyCommon.isAvailable()) {
             var path = getConfigPath();
             if (Files.exists(path)) {
@@ -74,8 +73,7 @@ public class VoxyConfig implements OptionStorage<VoxyConfig> {
                 .resolve("voxy-config.json");
     }
 
-    @Override
-    public VoxyConfig getData() {
-        return this;
+    public boolean isRenderingEnabled() {
+        return VoxyCommon.isAvailable() && this.enabled && this.enableRendering;
     }
 }

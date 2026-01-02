@@ -1,6 +1,8 @@
 package me.cortex.voxy.client.core.rendering.hierachical;
 
-import it.unimi.dsi.fastutil.ints.*;
+import it.unimi.dsi.fastutil.ints.Int2IntOpenHashMap;
+import it.unimi.dsi.fastutil.ints.IntConsumer;
+import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import me.cortex.voxy.client.TimingStatistics;
 import me.cortex.voxy.client.core.gl.GlBuffer;
@@ -17,6 +19,7 @@ import me.cortex.voxy.client.core.rendering.util.UploadStream;
 import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.common.util.AllocationArena;
 import me.cortex.voxy.common.util.MemoryBuffer;
+import me.cortex.voxy.common.util.UnsafeUtil;
 import me.cortex.voxy.common.world.WorldEngine;
 import me.cortex.voxy.common.world.WorldSection;
 import org.lwjgl.system.MemoryUtil;
@@ -186,7 +189,7 @@ public class AsyncNodeManager {
             }
             //This is a funny thing, wait a bit, this allows for better batching, but this thread is independent of everything else so waiting a bit should be mostly ok
             try {
-                Thread.sleep(25);
+                Thread.sleep(10);
             } catch (InterruptedException e) {
                 throw new RuntimeException(e);
             }
@@ -246,7 +249,7 @@ public class AsyncNodeManager {
 
         //Limit uploading as well as by geometry capacity being available
         // must have 50 mb of free geometry space to upload
-        for (int limit = 0; limit < 200 && ((this.geometryCapacity-this.geometryManager.getGeometryUsedBytes())>50_000_000); limit++) {
+        for (int limit = 0; limit < 300 && ((this.geometryCapacity-this.geometryManager.getGeometryUsedBytes())>50_000_000L); limit++) {
             var job = this.geometryUpdateQueue.poll();
             if (job == null)
                 break;
@@ -475,7 +478,10 @@ public class AsyncNodeManager {
         results.usedGeometry = this.geometryManager.getGeometryUsedBytes();
         results.currentMaxNodeId = this.manager.getCurrentMaxNodeId();
 
-        this.needsWaitForSync |= results.geometryUpload.currentElemCopyAmount*8L > 4L<<20;//4mb limit per frame
+        this.needsWaitForSync |= results.geometryUpload.currentElemCopyAmount*8L > 2L<<20;//2mb limit per frame
+        this.needsWaitForSync |= results.cleanerOperations.size() > 1024;
+        this.needsWaitForSync |= results.scatterWriteLocationMap.size() > 4096;
+        this.needsWaitForSync |= results.tlnDelta.size() > 10;
 
         if (!RESULT_HANDLE.compareAndSet(this, null, results)) {
             throw new IllegalArgumentException("Should always have null");
@@ -511,13 +517,14 @@ public class AsyncNodeManager {
 
             var upload = results.geometryUpload;
             if (!upload.dataUploadPoints.isEmpty()) {
+                ((BasicSectionGeometryData)this.geometryData).ensureAccessable(upload.maxElementAccess);
                 TimingStatistics.A.start();
 
                 int copies = upload.dataUploadPoints.size();
                 int scratchSize = (int) upload.arena.getSize() * 8;
                 long ptr = UploadStream.INSTANCE.rawUploadAddress(scratchSize + copies * 16);
-                MemoryUtil.memCopy(upload.scratchHeaderBuffer.address, UploadStream.INSTANCE.getBaseAddress() + ptr, copies * 16L);
-                MemoryUtil.memCopy(upload.scratchDataBuffer.address, UploadStream.INSTANCE.getBaseAddress() + ptr + copies * 16L, scratchSize);
+                UnsafeUtil.memcpy(upload.scratchHeaderBuffer.address, UploadStream.INSTANCE.getBaseAddress() + ptr, copies * 16L);
+                UnsafeUtil.memcpy(upload.scratchDataBuffer.address, UploadStream.INSTANCE.getBaseAddress() + ptr + copies * 16L, scratchSize);
                 UploadStream.INSTANCE.commit();//Commit the buffer
 
                 this.multiMemcpy.bind();
@@ -757,11 +764,20 @@ public class AsyncNodeManager {
         return this.workCounter.get()!=0 || RESULT_HANDLE.get(this) != null;
     }
 
-    public void worldEvent(WorldSection section, int flags) {
+    public void worldEvent(WorldSection section, int flags, int neighborMask) {
         //If there is any change, we need to clear the geometry cache before emitting update
         this.geometryCache.clear(section.key);
 
         this.router.forwardEvent(section, flags);
+
+        if (neighborMask != 0) {//trigger rebuilds for neighbors
+            if ((neighborMask&0b000001)!=0) this.router.triggerRemesh(WorldEngine.getWorldSectionId(section.lvl, section.x, section.y-1, section.z));//-y
+            if ((neighborMask&0b000010)!=0) this.router.triggerRemesh(WorldEngine.getWorldSectionId(section.lvl, section.x, section.y+1, section.z));//+y
+            if ((neighborMask&0b000100)!=0) this.router.triggerRemesh(WorldEngine.getWorldSectionId(section.lvl, section.x-1, section.y, section.z));//-x
+            if ((neighborMask&0b001000)!=0) this.router.triggerRemesh(WorldEngine.getWorldSectionId(section.lvl, section.x+1, section.y, section.z));//+x
+            if ((neighborMask&0b010000)!=0) this.router.triggerRemesh(WorldEngine.getWorldSectionId(section.lvl, section.x, section.y, section.z-1));//-z
+            if ((neighborMask&0b100000)!=0) this.router.triggerRemesh(WorldEngine.getWorldSectionId(section.lvl, section.x, section.y, section.z+1));//+z
+        }
     }
 
     //Results object, which is to be synced between the render thread and worker thread
@@ -846,6 +862,7 @@ public class AsyncNodeManager {
 
     private static class ComputeMemoryCopy {
         public int currentElemCopyAmount;
+        public int maxElementAccess;
         private MemoryBuffer scratchHeaderBuffer = new MemoryBuffer(1<<16);
         private MemoryBuffer scratchDataBuffer = new MemoryBuffer(1<<20);
 
@@ -897,6 +914,7 @@ public class AsyncNodeManager {
         public void upload(int point, MemoryBuffer data) {
             if ((data.size%8)!=0) throw new IllegalStateException("Data must be of size multiple 8");
             int elemSize = (int) (data.size / 8);
+            this.maxElementAccess = Math.max(this.maxElementAccess, point + elemSize);
             int header = this.dataUploadPoints.get(point);
             if (header != -1) {
                 //If we already have a header location, we just need to reallocate the data
@@ -971,6 +989,7 @@ public class AsyncNodeManager {
         }
 
         public void reset() {
+            this.maxElementAccess = 0;
             this.currentElemCopyAmount = 0;
             this.dataUploadPoints.clear();
             this.arena.reset();

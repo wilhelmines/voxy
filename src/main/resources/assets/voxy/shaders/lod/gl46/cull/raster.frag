@@ -1,8 +1,9 @@
 #version 460 core
-#extension GL_ARB_gpu_shader_int64 : enable
-#define VISIBILITY_ACCESS
 #define VISIBILITY_BUFFER_BINDING 2
-#import <voxy:lod/gl46/bindings.glsl>
+layout(binding = VISIBILITY_BUFFER_BINDING, std430) restrict buffer VisibilityBuffer {
+    uint visibilityData[];
+};
+
 layout(early_fragment_tests) in;
 
 flat in uint id;

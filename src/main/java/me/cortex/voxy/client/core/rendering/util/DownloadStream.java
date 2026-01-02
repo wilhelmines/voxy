@@ -18,7 +18,7 @@ import static org.lwjgl.opengl.GL11.glFinish;
 import static org.lwjgl.opengl.GL30C.GL_MAP_READ_BIT;
 import static org.lwjgl.opengl.GL42.GL_BUFFER_UPDATE_BARRIER_BIT;
 import static org.lwjgl.opengl.GL42.glMemoryBarrier;
-import static org.lwjgl.opengl.GL44.*;
+import static org.lwjgl.opengl.GL44.GL_CLIENT_MAPPED_BUFFER_BARRIER_BIT;
 import static org.lwjgl.opengl.GL45.glCopyNamedBufferSubData;
 
 public class DownloadStream {
@@ -149,6 +149,21 @@ public class DownloadStream {
     }
 
     //Synchonize force flushes everything
+    public void waitDiscard() {
+        glFinish();
+        var fence = new GlFence();
+        glFinish();
+        while (!fence.signaled())
+            Thread.onSpinWait();
+        fence.free();
+        while (!this.frames.isEmpty()) {
+            var frame = this.frames.pop();
+            while (!frame.fence.signaled()) Thread.onSpinWait();
+            frame.allocations.forEach(this.allocationArena::free);
+            frame.fence.free();
+        }
+    }
+
     public void flushWaitClear() {
         glFinish();
         this.tick();

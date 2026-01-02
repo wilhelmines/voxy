@@ -2,6 +2,9 @@ package me.cortex.voxy.client.core.model;
 
 import me.cortex.voxy.client.core.gl.GlBuffer;
 import me.cortex.voxy.client.core.gl.GlTexture;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.renderer.texture.TextureAtlas;
+import net.minecraft.resources.Identifier;
 
 import static org.lwjgl.opengl.GL11.*;
 import static org.lwjgl.opengl.GL11C.GL_NEAREST;
@@ -24,14 +27,18 @@ public class ModelStore {
     public ModelStore() {
         this.modelBuffer = new GlBuffer(MODEL_SIZE * (1<<16)).name("ModelData");
         this.modelColourBuffer = new GlBuffer(4 * (1<<16)).name("ModelColour");
-        this.textures = new GlTexture().store(GL_RGBA8, 4, ModelFactory.MODEL_TEXTURE_SIZE*3*256,ModelFactory.MODEL_TEXTURE_SIZE*2*256).name("ModelTextures");
+        this.textures = new GlTexture().store(GL_RGBA8, Integer.numberOfTrailingZeros(ModelFactory.MODEL_TEXTURE_SIZE), ModelFactory.MODEL_TEXTURE_SIZE*3*256,ModelFactory.MODEL_TEXTURE_SIZE*2*256).name("ModelTextures");
 
 
+        //Limit the mips of the texture to match that of the terrain atlas
+        int mipLvl = ((TextureAtlas) Minecraft.getInstance().getTextureManager()
+                .getTexture(Identifier.fromNamespaceAndPath("minecraft", "textures/atlas/blocks.png")))
+                .maxMipLevel;
 
         glSamplerParameteri(this.blockSampler, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_LINEAR);
         glSamplerParameteri(this.blockSampler, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glSamplerParameteri(this.blockSampler, GL_TEXTURE_MIN_LOD, 0);
-        glSamplerParameteri(this.blockSampler, GL_TEXTURE_MAX_LOD, 4);
+        glSamplerParameteri(this.blockSampler, GL_TEXTURE_MAX_LOD, mipLvl);//Integer.numberOfTrailingZeros(ModelFactory.MODEL_TEXTURE_SIZE)
     }
 
 

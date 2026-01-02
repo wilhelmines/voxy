@@ -4,12 +4,11 @@ import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.objects.Object2IntMap;
 import it.unimi.dsi.fastutil.objects.Object2IntOpenHashMap;
 import me.cortex.voxy.common.Logger;
-import me.cortex.voxy.common.config.storage.StorageBackend;
 import me.cortex.voxy.common.config.ConfigBuildCtx;
+import me.cortex.voxy.common.config.storage.StorageBackend;
 import me.cortex.voxy.common.config.storage.StorageConfig;
 import me.cortex.voxy.common.util.MemoryBuffer;
-import net.minecraft.util.math.random.RandomSeed;
-
+import net.minecraft.world.level.levelgen.RandomSupport;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -30,7 +29,7 @@ public class FragmentedStorageBackendAdaptor extends StorageBackend {
     }
 
     private int getSegmentId(long key) {
-        return (int) (RandomSeed.mixStafford13(RandomSeed.mixStafford13(key)^key)&(this.backends.length-1));
+        return (int) (RandomSupport.mixStafford13(RandomSupport.mixStafford13(key)^key)&(this.backends.length-1));
     }
 
     @Override

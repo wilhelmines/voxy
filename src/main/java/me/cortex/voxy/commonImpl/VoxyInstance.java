@@ -2,14 +2,17 @@ package me.cortex.voxy.commonImpl;
 
 import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.common.config.section.SectionStorage;
-import me.cortex.voxy.common.thread.ServiceThreadPool;
+import me.cortex.voxy.common.thread.ServiceManager;
+import me.cortex.voxy.common.thread.UnifiedServiceThreadPool;
 import me.cortex.voxy.common.util.MemoryBuffer;
 import me.cortex.voxy.common.world.WorldEngine;
 import me.cortex.voxy.common.world.service.SectionSavingService;
 import me.cortex.voxy.common.world.service.VoxelIngestService;
 
 import java.lang.ref.WeakReference;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
 import java.util.concurrent.locks.StampedLock;
 import java.util.function.BooleanSupplier;
 import java.util.stream.Collectors;
@@ -19,7 +22,7 @@ public abstract class VoxyInstance {
     private volatile boolean isRunning = true;
     private final Thread worldCleaner;
     public final BooleanSupplier savingServiceRateLimiter;//Can run if this returns true
-    protected final ServiceThreadPool threadPool;
+    protected final UnifiedServiceThreadPool threadPool;
     protected final SectionSavingService savingService;
     protected final VoxelIngestService ingestService;
 
@@ -28,11 +31,11 @@ public abstract class VoxyInstance {
 
     protected final ImportManager importManager;
 
-    public VoxyInstance(int threadCount) {
+    public VoxyInstance() {
         Logger.info("Initializing voxy instance");
-        this.threadPool = new ServiceThreadPool(threadCount);
-        this.savingService = new SectionSavingService(this.threadPool);
-        this.ingestService = new VoxelIngestService(this.threadPool);
+        this.threadPool = new UnifiedServiceThreadPool();
+        this.savingService = new SectionSavingService(this.getServiceManager());
+        this.ingestService = new VoxelIngestService(this.getServiceManager());
         this.importManager = this.createImportManager();
         this.savingServiceRateLimiter = ()->this.savingService.getTaskCount()<1200;
         this.worldCleaner = new Thread(()->{
@@ -54,11 +57,25 @@ public abstract class VoxyInstance {
         this.worldCleaner.start();
     }
 
+    protected void setNumThreads(int threads) {
+        if (threads<0) throw new IllegalArgumentException("Num threads <0");
+        if (this.threadPool.setNumThreads(threads)) {
+            Logger.info("Dedicated voxy thread pool size: " + threads);
+        }
+    }
+
+    public void updateDedicatedThreads() {
+        this.setNumThreads(3);
+    }
+
     protected ImportManager createImportManager() {
         return new ImportManager();
     }
 
-    public ServiceThreadPool getThreadPool() {
+    public ServiceManager getServiceManager() {
+        return this.threadPool.serviceManager;
+    }
+    public UnifiedServiceThreadPool getThreadPool() {
         return this.threadPool;
     }
     public VoxelIngestService getIngestService() {
@@ -73,6 +90,7 @@ public abstract class VoxyInstance {
     // note, the reference count should be separate from the number of active chunks to prevent many issues
     // a world is no longer active once it has no reference counts and no active chunks associated with it
     public WorldEngine getNullable(WorldIdentifier identifier) {
+        if (!this.isRunning) return null;
         var cache = identifier.cachedEngineObject;
         WorldEngine world;
         if (cache == null) {
@@ -109,16 +127,36 @@ public abstract class VoxyInstance {
     }
 
     public WorldEngine getOrCreate(WorldIdentifier identifier) {
+        return this.getOrCreate(identifier, false);
+    }
+
+    public WorldEngine getOrCreate(WorldIdentifier identifier, boolean incrementRef) {
+        if (!this.isRunning) {
+            Logger.error("Tried getting world object on voxy instance but its not running");
+            return null;
+        }
         var world = this.getNullable(identifier);
         if (world != null) {
+            world.markActive();
+            if (incrementRef) world.acquireRef();
             return world;
         }
         long stamp = this.activeWorldLock.writeLock();
+
+        if (!this.isRunning) {
+            Logger.error("Tried getting world object on voxy instance but its not running");
+            return null;
+        }
+
         world = this.activeWorlds.get(identifier);
         if (world == null) {
             //Create world here
             world = this.createWorld(identifier);
         }
+        world.markActive();
+
+        if (incrementRef) world.acquireRef();
+
         this.activeWorldLock.unlockWrite(stamp);
         identifier.cachedEngineObject = new WeakReference<>(world);
         return world;
@@ -128,10 +166,13 @@ public abstract class VoxyInstance {
     protected abstract SectionStorage createStorage(WorldIdentifier identifier);
 
     private WorldEngine createWorld(WorldIdentifier identifier) {
+        if (!this.isRunning) {
+            throw new IllegalStateException("Cannot create world while not running");
+        }
         if (this.activeWorlds.containsKey(identifier)) {
             throw new IllegalStateException("Existing world with identifier");
         }
-        Logger.info("Creating new world engine: " + identifier.getLongHash());
+        Logger.info("Creating new world engine: " + identifier.getLongHash() + "@" + System.identityHashCode(this));
         var world = new WorldEngine(this.createStorage(identifier), this);
         world.setSaveCallback(this.savingService::enqueueSave);
         this.activeWorlds.put(identifier, world);
@@ -167,8 +208,8 @@ public abstract class VoxyInstance {
     }
 
     public void addDebug(List<String> debug) {
-        debug.add("Voxy Core: " + VoxyCommon.MOD_VERSION);
         debug.add("MemoryBuffer, Count/Size (mb): " + MemoryBuffer.getCount() + "/" + (MemoryBuffer.getTotalSize()/1_000_000));
+        //TODO: fixme, doing this.activeWorlds.values() is not thread safe
         debug.add("I/S/AWSC: " + this.ingestService.getTaskCount() + "/" + this.savingService.getTaskCount() + "/[" + this.activeWorlds.values().stream().map(a->""+a.getActiveSectionCount()).collect(Collectors.joining(", ")) + "]");//Active world section count
     }
 
@@ -226,5 +267,9 @@ public abstract class VoxyInstance {
         }
         Logger.info("Instance shutdown");
         this.activeWorldLock.unlockWrite(stamp);
+    }
+
+    public boolean isIngestEnabled(WorldIdentifier worldId) {
+        return true;
     }
 }

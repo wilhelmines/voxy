@@ -2,6 +2,7 @@ package me.cortex.voxy.common.world;
 
 import me.cortex.voxy.common.voxelization.VoxelizedSection;
 import me.cortex.voxy.common.world.other.Mapper;
+import me.cortex.voxy.commonImpl.VoxyCommon;
 
 import static me.cortex.voxy.common.world.WorldEngine.*;
 
@@ -12,7 +13,7 @@ public class WorldUpdater {
     public static void insertUpdate(WorldEngine into, VoxelizedSection section) {//TODO: add a bitset of levels to update and if it should force update
 
         //Do some very cheeky stuff for MiB
-        if (false) {
+        if (VoxyCommon.IS_MINE_IN_ABYSS) {
             int sector = (section.x+512)>>10;
             section.setPosition(section.x-(sector<<10), section.y+16+(256-32-sector*30), section.z);//Note sector size mult is 30 because the top chunk is replicated (and so is bottom chunk)
         }
@@ -54,7 +55,11 @@ public class WorldUpdater {
                     final int iSecMsk1 = (~secMsk) + 1;
 
                     int secIdx = 0;
-                    //TODO: manually unroll and do e.g. 4 iterations per loop
+
+                    //TODO rotate the loop parralelization
+                    // i.e. instead of doing 4 consecutive blocks, which would all be in the same cache line
+                    // do 4 seperate rows so they are in different cache lines, should allow
+                    // more instruction pipelining (in theory)
                     for (int i = 0; i <= 0xFFF; i+=4) {
                         int cSecIdx = secIdx + baseSec;
                         secIdx = (secIdx + iSecMsk1) & secMsk;
@@ -98,7 +103,21 @@ public class WorldUpdater {
             }
 
             if (didStateChange||(emptinessStateChange!=0)) {
-                into.markDirty(worldSection, (didStateChange?UPDATE_TYPE_BLOCK_BIT:0)|(emptinessStateChange!=0?UPDATE_TYPE_CHILD_EXISTENCE_BIT:0));
+                //TODO: somehow foward the neighbors that are facing the updated area, this allows forwarding to the dirty consumer
+                // which can decide wether to dispatch mesh rebuilds to the surounding sections
+                //Bitmask of neighboring sections
+                //Note, this may be zero (this is more likely to occure at higher lod levels) if it doesnt face any neighbors
+                int neighbors = 0;
+                if (didStateChange) {
+                    neighbors |= ((section.y^(section.y-1))>>(lvl+1))==0?0:1<<0;//Down
+                    neighbors |= ((section.y^(section.y+1))>>(lvl+1))==0?0:1<<1;//Up
+                    neighbors |= ((section.x^(section.x-1))>>(lvl+1))==0?0:1<<2;//-x
+                    neighbors |= ((section.x^(section.x+1))>>(lvl+1))==0?0:1<<3;//+x
+                    neighbors |= ((section.z^(section.z-1))>>(lvl+1))==0?0:1<<4;//-z
+                    neighbors |= ((section.z^(section.z+1))>>(lvl+1))==0?0:1<<5;//+z
+                }
+
+                into.markDirty(worldSection, (didStateChange?UPDATE_TYPE_BLOCK_BIT:0)|(emptinessStateChange!=0?UPDATE_TYPE_CHILD_EXISTENCE_BIT:0), neighbors);
             }
 
             //Need to release the section after using it

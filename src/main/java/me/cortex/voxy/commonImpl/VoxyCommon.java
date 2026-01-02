@@ -30,9 +30,12 @@ public class VoxyCommon implements ModInitializer {
     }
 
     //This is hardcoded like this because people do not understand what they are doing
-    private static final boolean GlobalVerificationDisableOverride = true;//System.getProperty("voxy.verificationDisableOverride", "false").equals("true");
     public static boolean isVerificationFlagOn(String name) {
-        return (!GlobalVerificationDisableOverride) && System.getProperty("voxy."+name, "true").equals("true");
+        return isVerificationFlagOn(name, false);
+    }
+
+    public static boolean isVerificationFlagOn(String name, boolean defaultOn) {
+        return System.getProperty("voxy."+name, defaultOn?"true":"false").equals("true");
     }
 
     public static void breakpoint() {
@@ -61,8 +64,9 @@ public class VoxyCommon implements ModInitializer {
 
     public static void shutdownInstance() {
         if (INSTANCE != null) {
-            INSTANCE.shutdown();
-            INSTANCE = null;
+            var instance = INSTANCE;
+            INSTANCE = null;//Make it null before shutdown
+            instance.shutdown();
         }
     }
 
@@ -81,4 +85,6 @@ public class VoxyCommon implements ModInitializer {
     public static boolean isAvailable() {
         return FACTORY != null;
     }
+
+    public static final boolean IS_MINE_IN_ABYSS = false;
 }

@@ -26,6 +26,8 @@ public class AutoBindingShader extends Shader {
     private final List<BufferBinding> bindings = new ArrayList<>();
     private final List<TextureBinding> textureBindings = new ArrayList<>();
 
+    private boolean rebuild = true;
+
     AutoBindingShader(Shader.Builder<AutoBindingShader> builder, int program) {
         super(program);
         this.defines = builder.defines;
@@ -70,6 +72,8 @@ public class AutoBindingShader extends Shader {
     }
 
     private void insertOrReplaceBinding(BufferBinding binding) {
+        this.rebuild = true;
+
         //Check if there is already a binding at the index with the target, if so, replace it
         for (int i = 0; i < this.bindings.size(); i++) {
             var entry = this.bindings.get(i);
@@ -92,6 +96,16 @@ public class AutoBindingShader extends Shader {
     }
 
     public AutoBindingShader texture(int unit, int sampler, GlTexture texture) {
+        this.rebuild = true;
+
+        for (int i = 0; i < this.textureBindings.size(); i++) {
+            var entry = this.textureBindings.get(i);
+            if (entry.unit == unit) {
+                this.textureBindings.set(i, new TextureBinding(unit, sampler, texture));
+                return this;
+            }
+        }
+
         this.textureBindings.add(new TextureBinding(unit, sampler, texture));
         return this;
     }
@@ -99,6 +113,13 @@ public class AutoBindingShader extends Shader {
     @Override
     public void bind() {
         super.bind();
+        //TODO: replace with multibind and use the invalidate flag
+        /*
+        glBindSamplers();
+        glBindTextures();
+        glBindBuffersBase();
+        glBindBuffersRange();
+         */
         if (!this.bindings.isEmpty()) {
             for (var binding : this.bindings) {
                 binding.buffer.assertNotFreed();

@@ -2,9 +2,13 @@ package me.cortex.voxy.client.core.rendering.post;
 
 import me.cortex.voxy.client.core.gl.shader.Shader;
 import me.cortex.voxy.client.core.gl.shader.ShaderType;
+import me.cortex.voxy.client.core.rendering.util.SharedIndexBuffer;
 
-import static org.lwjgl.opengl.GL11C.GL_TRIANGLES;
-import static org.lwjgl.opengl.GL11C.glDrawArrays;
+import java.util.function.Function;
+
+import static org.lwjgl.opengl.GL11C.*;
+import static org.lwjgl.opengl.GL15C.GL_ELEMENT_ARRAY_BUFFER;
+import static org.lwjgl.opengl.GL15C.glBindBuffer;
 import static org.lwjgl.opengl.GL30C.glBindVertexArray;
 import static org.lwjgl.opengl.GL45C.glCreateVertexArrays;
 
@@ -13,9 +17,21 @@ public class FullscreenBlit {
 
     private final Shader shader;
     public FullscreenBlit(String fragId) {
-        this.shader = Shader.make()
-                .add(ShaderType.VERTEX, "voxy:post/fullscreen.vert")
-                .add(ShaderType.FRAGMENT, fragId)
+        this(fragId, (a)->a);
+    }
+
+    public FullscreenBlit(String vertId, String fragId) {
+        this(vertId, fragId, (a)->a);
+    }
+
+    public <T extends Shader> FullscreenBlit(String fragId, Function<Shader.Builder<T>, Shader.Builder<T>> builder) {
+        this("voxy:post/fullscreen.vert", fragId, builder);
+    }
+
+    public <T extends Shader> FullscreenBlit(String vertId, String fragId, Function<Shader.Builder<T>, Shader.Builder<T>> builder) {
+        this.shader = builder.apply((Shader.Builder<T>) Shader.make()
+                .add(ShaderType.VERTEX, vertId)
+                .add(ShaderType.FRAGMENT, fragId))
                 .compile();
     }
 
@@ -26,7 +42,8 @@ public class FullscreenBlit {
     public void blit() {
         glBindVertexArray(EMPTY_VAO);
         this.shader.bind();
-        glDrawArrays(GL_TRIANGLES, 0, 6);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, SharedIndexBuffer.INSTANCE_BYTE.id());
+        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_BYTE, 0);
         glBindVertexArray(0);
     }
 

@@ -1,14 +1,19 @@
 package me.cortex.voxy.client.core.rendering;
 
 import me.cortex.voxy.client.core.gl.GlBuffer;
+import me.cortex.voxy.client.core.rendering.util.DepthFramebuffer;
 import me.cortex.voxy.client.core.rendering.util.HiZBuffer;
-import net.minecraft.util.math.MathHelper;
+import net.caffeinemc.mods.sodium.client.util.FogParameters;
+import net.minecraft.util.Mth;
 import org.joml.*;
 
 import java.lang.reflect.Field;
 
 public abstract class Viewport <A extends Viewport<A>> {
+    //public final HiZBuffer2 hiZBuffer = new HiZBuffer2();
     public final HiZBuffer hiZBuffer = new HiZBuffer();
+    public final DepthFramebuffer depthBoundingBuffer = new DepthFramebuffer();
+
     private static final Field planesField;
     static {
         try {
@@ -22,13 +27,15 @@ public abstract class Viewport <A extends Viewport<A>> {
     public int width;
     public int height;
     public int frameId;
-    public Matrix4f projection;
-    public Matrix4f modelView;
+    public Matrix4f vanillaProjection = new Matrix4f();
+    public Matrix4f projection = new Matrix4f();
+    public Matrix4f modelView = new Matrix4f();
     public final FrustumIntersection frustum = new FrustumIntersection();
     public final Vector4f[] frustumPlanes;
     public double cameraX;
     public double cameraY;
     public double cameraZ;
+    public FogParameters fogParameters;
 
     public final Matrix4f MVP = new Matrix4f();
     public final Vector3i section = new Vector3i();
@@ -50,6 +57,12 @@ public abstract class Viewport <A extends Viewport<A>> {
 
     protected void delete0() {
         this.hiZBuffer.free();
+        this.depthBoundingBuffer.free();
+    }
+
+    public A setVanillaProjection(Matrix4fc projection) {
+        this.vanillaProjection.set(projection);
+        return (A) this;
     }
 
     public A setProjection(Matrix4f projection) {
@@ -75,6 +88,11 @@ public abstract class Viewport <A extends Viewport<A>> {
         return (A) this;
     }
 
+    public A setFogParameters(FogParameters fogParameters) {
+        this.fogParameters = fogParameters;
+        return (A) this;
+    }
+
     public A update() {
         //MVP
         this.projection.mul(this.modelView, this.MVP);
@@ -83,15 +101,19 @@ public abstract class Viewport <A extends Viewport<A>> {
         this.frustum.set(this.MVP, false);
 
         //Translation vectors
-        int sx = MathHelper.floor(this.cameraX)>>5;
-        int sy = MathHelper.floor(this.cameraY)>>5;
-        int sz = MathHelper.floor(this.cameraZ)>>5;
+        int sx = Mth.floor(this.cameraX)>>5;
+        int sy = Mth.floor(this.cameraY)>>5;
+        int sz = Mth.floor(this.cameraZ)>>5;
         this.section.set(sx, sy, sz);
 
         this.innerTranslation.set(
                 (float) (this.cameraX-(sx<<5)),
                 (float) (this.cameraY-(sy<<5)),
                 (float) (this.cameraZ-(sz<<5)));
+
+        if (this.depthBoundingBuffer.resize(this.width, this.height)) {
+            this.depthBoundingBuffer.clear(0.0f);
+        }
 
         return (A) this;
     }

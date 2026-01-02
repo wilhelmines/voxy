@@ -15,11 +15,9 @@ import static me.cortex.voxy.common.util.AllocationArena.SIZE_LIMIT;
 import static org.lwjgl.opengl.ARBDirectStateAccess.glCopyNamedBufferSubData;
 import static org.lwjgl.opengl.ARBMapBufferRange.*;
 import static org.lwjgl.opengl.GL11.glFinish;
-import static org.lwjgl.opengl.GL42.GL_UNIFORM_BARRIER_BIT;
 import static org.lwjgl.opengl.GL42.glMemoryBarrier;
 import static org.lwjgl.opengl.GL42C.GL_BUFFER_UPDATE_BARRIER_BIT;
-import static org.lwjgl.opengl.GL43.GL_SHADER_STORAGE_BARRIER_BIT;
-import static org.lwjgl.opengl.GL44.GL_CLIENT_MAPPED_BUFFER_BARRIER_BIT;
+import static org.lwjgl.opengl.GL44.GL_CLIENT_STORAGE_BIT;
 import static org.lwjgl.opengl.GL44.GL_MAP_COHERENT_BIT;
 import static org.lwjgl.opengl.GL45C.glFlushMappedNamedBufferRange;
 
@@ -34,7 +32,7 @@ public class UploadStream {
     private static final boolean USE_COHERENT = false;
 
     public UploadStream(long size) {
-        this.uploadBuffer = new GlPersistentMappedBuffer(size,GL_MAP_WRITE_BIT|GL_MAP_UNSYNCHRONIZED_BIT|(USE_COHERENT?GL_MAP_COHERENT_BIT:GL_MAP_FLUSH_EXPLICIT_BIT)).name("UploadStream");
+        this.uploadBuffer = new GlPersistentMappedBuffer(size,GL_CLIENT_STORAGE_BIT|GL_MAP_WRITE_BIT|GL_MAP_UNSYNCHRONIZED_BIT|(USE_COHERENT?GL_MAP_COHERENT_BIT:GL_MAP_FLUSH_EXPLICIT_BIT)).name("UploadStream");
         this.allocationArena.setLimit(size);
     }
 
@@ -42,6 +40,10 @@ public class UploadStream {
     private long offset = 0;
     public void upload(GlBuffer buffer, long destOffset, MemoryBuffer data) {//Note: does not free data, nor does it commit
         data.cpyTo(this.upload(buffer, destOffset, data.size));
+    }
+
+    public long uploadTo(GlBuffer buffer) {
+        return this.upload(buffer, 0, buffer.size());
     }
 
     public long upload(GlBuffer buffer, long destOffset, long size) {
@@ -105,12 +107,13 @@ public class UploadStream {
     }
 
     public void commit() {
-        if (this.uploadList.isEmpty()) {
-            return;
-        }
         if ((!USE_COHERENT)&&this.caddr != -1) {
             //Flush this allocation
             glFlushMappedNamedBufferRange(this.uploadBuffer.id, this.caddr, this.offset);
+        }
+
+        if (this.uploadList.isEmpty()) {
+            return;
         }
 
         glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);

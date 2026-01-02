@@ -11,11 +11,12 @@ import org.lwjgl.system.MemoryUtil;
 
 import java.util.function.Consumer;
 
-import static me.cortex.voxy.client.core.rendering.section.geometry.BasicSectionGeometryManager.SECTION_METADATA_SIZE;
 
 //Is basicly the manager for an "undefined" data store, the underlying store is irrelevant
 // this manager serves as an overlay, that is, it allows an implementation to do "async management" of the data store
 public class BasicAsyncGeometryManager implements IGeometryManager {
+    public static final int SECTION_METADATA_SIZE = 32;
+
     private static final long GEOMETRY_ELEMENT_SIZE = 8;
     private final HierarchicalBitSet allocationSet;
     private final AllocationArena allocationHeap = new AllocationArena();
@@ -107,12 +108,14 @@ public class BasicAsyncGeometryManager implements IGeometryManager {
     private SectionMeta createMeta(BuiltSection section) {
         if ((section.geometryBuffer.size%GEOMETRY_ELEMENT_SIZE)!=0) throw new IllegalStateException();
         int size = (int) (section.geometryBuffer.size/GEOMETRY_ELEMENT_SIZE);
+        //clamp size upwards
+        int upsized = (size+1023)&~1023;
         //Address
-        int addr = (int)this.allocationHeap.alloc(size);
+        int addr = (int)this.allocationHeap.alloc(upsized);
         if (addr == -1) {
-            throw new IllegalStateException("Geometry OOM");
+            throw new IllegalStateException("Geometry OOM. requested allocation size (in elements): " + size + ", Heap size at top remaining: " + (this.allocationHeap.getLimit()-this.allocationHeap.getSize()) + ", used elements: " + this.usedCapacity);
         }
-        this.usedCapacity += size;
+        this.usedCapacity += upsized;
         //Create upload
         if (this.heapUploads.put(addr, section.geometryBuffer) != null) {
             throw new IllegalStateException("Addr: " + addr);

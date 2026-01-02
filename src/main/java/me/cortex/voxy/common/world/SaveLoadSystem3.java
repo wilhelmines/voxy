@@ -4,9 +4,7 @@ import it.unimi.dsi.fastutil.longs.Long2ShortOpenHashMap;
 import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.common.util.MemoryBuffer;
 import me.cortex.voxy.common.util.ThreadLocalMemoryBuffer;
-import me.cortex.voxy.common.util.UnsafeUtil;
 import me.cortex.voxy.common.world.other.Mapper;
-import me.cortex.voxy.commonImpl.VoxyCommon;
 import org.lwjgl.system.MemoryUtil;
 
 public class SaveLoadSystem3 {
@@ -14,7 +12,7 @@ public class SaveLoadSystem3 {
 
     private record SerializationCache(Long2ShortOpenHashMap lutMapCache, MemoryBuffer memoryBuffer) {
         public SerializationCache() {
-            this(new Long2ShortOpenHashMap(512), ThreadLocalMemoryBuffer.create(WorldSection.SECTION_VOLUME*2+WorldSection.SECTION_VOLUME*8+1024));
+            this(new Long2ShortOpenHashMap(1024), ThreadLocalMemoryBuffer.create(WorldSection.SECTION_VOLUME*2+WorldSection.SECTION_VOLUME*8+1024));
             this.lutMapCache.defaultReturnValue((short) -1);
         }
     }

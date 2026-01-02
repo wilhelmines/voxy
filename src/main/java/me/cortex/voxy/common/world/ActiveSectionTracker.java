@@ -3,9 +3,9 @@ package me.cortex.voxy.common.world;
 import it.unimi.dsi.fastutil.longs.Long2ObjectLinkedOpenHashMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import me.cortex.voxy.common.Logger;
+import me.cortex.voxy.common.world.other.Mapper;
 import org.jetbrains.annotations.Nullable;
 
-import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 import java.util.Arrays;
@@ -70,6 +70,7 @@ public class ActiveSectionTracker {
     }
 
     public WorldSection acquire(long key, boolean nullOnEmpty) {
+        //TODO: add optional verification check to ensure this (or other critical systems) arnt being called on the render or server thread
         if (this.engine != null) this.engine.lastActiveTime = System.currentTimeMillis();
         int index = this.getCacheArrayIndex(key);
         var cache = this.loadedSectionCache[index];
@@ -113,8 +114,22 @@ public class ActiveSectionTracker {
             long stamp2 = lock.readLock();
             long stamp = this.lruLock.writeLock();
             section = this.lruSecondaryCache.remove(key);
+
+            WorldSection removal = null;
+            if (section == null && (!this.lruSecondaryCache.isEmpty()) && this.lruSize+100<this.lruSecondaryCache.size()+this.getLoadedCacheCount()) {//Add a self clamping lru case for when there are alot of loaded sections
+                removal = this.lruSecondaryCache.removeFirst();
+            }
+
             this.lruLock.unlockWrite(stamp);
+            if (section != null) {
+                section.primeForReuse();
+                section.acquire(1);
+            }
             lock.unlockRead(stamp2);
+
+            if (removal != null) {
+                removal._releaseArray();
+            }
         } else {
             VolatileHolder.PRE_ACQUIRE_COUNT.getAndAdd(holder, 1);
         }
@@ -141,13 +156,14 @@ public class ActiveSectionTracker {
                 //TODO: REWRITE THE section tracker _again_ to not be so shit and jank, and so that Arrays.fill is not 10% of the execution time
                 if (status == 1) {
                     //We need to set the data to air as it is undefined state
-                    Arrays.fill(section.data, 0);
+                    int sky = 15;
+                    int block = 0;
+                    Arrays.fill(section.data, Mapper.composeMappingId((byte) (sky|(block<<4)),0,0));
                 }
-            } else {
-                section.primeForReuse();
+                section.acquire(1);
             }
             int preAcquireCount = (int) VolatileHolder.PRE_ACQUIRE_COUNT.getAndSet(holder, 0);
-            section.acquire(preAcquireCount+1);//pre acquire amount
+            section.acquire(preAcquireCount);//pre acquire amount
             VolatileHolder.POST_ACQUIRE_COUNT.set(holder, preAcquireCount);
 
             //TODO: mark if the section was loaded null
@@ -196,11 +212,6 @@ public class ActiveSectionTracker {
                     this.engine.saveSection(section);
                 }
                 section.release(false);//Special
-            } else {
-                VarHandle.loadLoadFence();
-                if (section.isDirty) {
-                    throw new IllegalStateException("Section was dirty but is also unloaded, this is very bad");
-                }
             }
         }
 
@@ -213,11 +224,23 @@ public class ActiveSectionTracker {
         final var lock = this.locks[index];
         long stamp = lock.writeLock();
         {
-            if (section.trySetFreed()) {
+            VarHandle.loadLoadFence();
+            if (section.isDirty) {
+                if (section.tryAcquire()) {
+                    if (section.setNotDirty()) {//If the section is dirty we must enqueue for saving
+                        if (this.engine != null)
+                            this.engine.saveSection(section);
+                    }
+                    section.release(false);//Special
+                } else {
+                    throw new IllegalStateException("Section was dirty but is also unloaded, this is very bad");
+                }
+            }
+            if (section.getRefCount() == 0 && section.trySetFreed()) {
                 var cached = cache.remove(section.key);
                 var obj = cached.obj;
                 if (obj == null) {
-                    throw new IllegalStateException("This should be impossible: " + WorldEngine.pprintPos(section.key));
+                    throw new IllegalStateException("This should be impossible: " + WorldEngine.pprintPos(section.key) + " secObj: " + System.identityHashCode(section));
                 }
                 if (obj != section) {
                     throw new IllegalStateException("Removed section not the same as the referenced section in the cache: cached: " + obj + " got: " + section + " A: " + WorldSection.ATOMIC_STATE_HANDLE.get(obj) + " B: " +WorldSection.ATOMIC_STATE_HANDLE.get(section));
@@ -229,6 +252,7 @@ public class ActiveSectionTracker {
         WorldSection aa = null;
         if (sec != null) {
             long stamp2 = this.lruLock.writeLock();
+            lock.unlockWrite(stamp);
             WorldSection a = this.lruSecondaryCache.put(section.key, section);
             if (a != null) {
                 throw new IllegalStateException("duplicate sections in cache is impossible");
@@ -239,9 +263,10 @@ public class ActiveSectionTracker {
             }
             this.lruLock.unlockWrite(stamp2);
 
+        } else {
+            lock.unlockWrite(stamp);
         }
 
-        lock.unlockWrite(stamp);
 
         if (aa != null) {
             aa._releaseArray();
@@ -270,16 +295,45 @@ public class ActiveSectionTracker {
         return this.lruSecondaryCache.size();
     }
 
-    public static void main(String[] args) {
-        var tracker = new ActiveSectionTracker(1, a->0, 1<<10);
+    public static void main(String[] args) throws InterruptedException {
+        var tracker = new ActiveSectionTracker(6, a->0, 2<<10);
+        var bean = tracker.acquire(0, 0, 0, 9, false);
+        var bean2 = tracker.acquire(1, 0, 0, 0, false);
+        System.out.println("Target obj:" + System.identityHashCode(bean2));
+        bean2.release();
+        Thread[] ts = new Thread[10];
+        for (int i = 0; i < ts.length;i++) {
+            int tid = i;
+            ts[i] = new Thread(()->{
+                try {
+                    for (int j = 0; j < 5000; j++) {
+                        if (true) {
+                            var section = tracker.acquire(0, 0, 0, 0, false);
+                            section.acquire();
+                            var section2 = tracker.acquire(1, 0, 0, 0, false);
+                            section.release();
+                            section.release();
+                            section2.release();
+                        }
+                        if (true) {
 
-        var section = tracker.acquire(0,0,0,0, false);
-        section.acquire();
-        var section2 = tracker.acquire(0,0,0,0, false);
-        section.release();
-        section.release();
-        section = tracker.acquire(0,0,0,0, false);
-        section.release();
-
+                            var section = tracker.acquire(0, 0, 0, 0, false);
+                            var section2 = tracker.acquire(1, 0, 0, 0, false);
+                            section2.release();
+                            section.release();
+                        }
+                        if (true) {
+                            tracker.acquire(1, 0, 0, 0, false).release();
+                        }
+                    }
+                } catch (Exception e) {
+                    throw new RuntimeException("Thread " + tid, e);
+                }
+            });
+            ts[i].start();
+        }
+        for (var t : ts) {
+            t.join();
+        }
     }
 }

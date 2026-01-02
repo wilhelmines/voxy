@@ -1,28 +1,31 @@
 package me.cortex.voxy.commonImpl;
 
 import me.cortex.voxy.common.world.WorldEngine;
-import net.minecraft.client.world.ClientWorld;
-import net.minecraft.registry.Registries;
-import net.minecraft.registry.RegistryKey;
-import net.minecraft.registry.RegistryKeys;
-import net.minecraft.util.Identifier;
-import net.minecraft.world.World;
-import net.minecraft.world.dimension.DimensionType;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.resources.Identifier;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.dimension.DimensionType;
+import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.lang.ref.WeakReference;
-import java.util.Objects;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 
 public class WorldIdentifier {
-    private static final RegistryKey<DimensionType> NULL_DIM_KEY = RegistryKey.of(RegistryKeys.DIMENSION_TYPE, Identifier.of("voxy:null_dimension_id"));
+    private static final ResourceKey<DimensionType> NULL_DIM_KEY = ResourceKey.create(Registries.DIMENSION_TYPE, Identifier.parse("voxy:null_dimension_id"));
 
-    public final RegistryKey<World> key;
+    public final ResourceKey<Level> key;
     public final long biomeSeed;
-    public final RegistryKey<DimensionType> dimension;//Maybe?
+    public final ResourceKey<DimensionType> dimension;//Maybe?
     private final transient long hashCode;
     @Nullable transient WeakReference<WorldEngine> cachedEngineObject;
 
-    public WorldIdentifier(RegistryKey<World> key, long biomeSeed, @Nullable RegistryKey<DimensionType> dimension) {
+    public WorldIdentifier(@NotNull ResourceKey<Level> key, long biomeSeed, @Nullable ResourceKey<DimensionType> dimension) {
+        if (key == null) {
+            throw new IllegalStateException("Key cannot be null");
+        }
         dimension = dimension==null?NULL_DIM_KEY:dimension;
         this.key = key;
         this.biomeSeed = biomeSeed;
@@ -40,11 +43,17 @@ public class WorldIdentifier {
         if (obj instanceof WorldIdentifier other) {
             return other.hashCode == this.hashCode &&
                     other.biomeSeed == this.biomeSeed &&
-                    other.key == this.key &&//other.key.equals(this.key) &&
-                    other.dimension == this.dimension//other.dimension.equals(this.dimension)
+                    equal(other.key, this.key) &&//other.key.equals(this.key) &&
+                    equal(other.dimension, this.dimension)//other.dimension.equals(this.dimension)
                     ;
         }
         return false;
+    }
+
+    private static <T> boolean equal(ResourceKey<T> a, ResourceKey<T> b) {
+        if (a == b) return true;
+        if (a == null || b == null) return false;
+        return a.registry().equals(b.registry()) && a.identifier().equals(b.identifier());
     }
 
     //Quick access utility method to get or create a world object in the current instance
@@ -70,25 +79,25 @@ public class WorldIdentifier {
         return instance.getNullable(this);
     }
 
-    public static WorldIdentifier of(World world) {
+    public static WorldIdentifier of(Level level) {
         //Gets or makes an identifier for world
-        if (world == null) {
+        if (level == null) {
             return null;
         }
-        return ((IWorldGetIdentifier)world).voxy$getIdentifier();
+        return ((IWorldGetIdentifier)level).voxy$getIdentifier();
     }
 
     //Common utility function to get or create a world engine
-    public static WorldEngine ofEngine(World world) {
-        var id = of(world);
+    public static WorldEngine ofEngine(Level level) {
+        var id = of(level);
         if (id == null) {
             return null;
         }
         return id.getOrCreateEngine();
     }
 
-    public static WorldEngine ofEngineNullable(World world) {
-        var id = of(world);
+    public static WorldEngine ofEngineNullable(Level level) {
+        var id = of(level);
         if (id == null) {
             return null;
         }
@@ -106,11 +115,38 @@ public class WorldIdentifier {
         return this.hashCode;
     }
 
-    private static long registryKeyHashCode(RegistryKey<?> key) {
-        var A = key.getRegistry();
-        var B = key.getValue();
+    private static long registryKeyHashCode(ResourceKey<?> key) {
+        var A = key.registry();
+        var B = key.identifier();
         int a = A==null?0:A.hashCode();
         int b = B==null?0:B.hashCode();
         return (Integer.toUnsignedLong(a)<<32)|Integer.toUnsignedLong(b);
+    }
+
+
+    private static String bytesToHex(byte[] hash) {
+        StringBuilder hexString = new StringBuilder(2 * hash.length);
+        for (byte b : hash) {
+            String hex = Integer.toHexString(0xff & b);
+            if (hex.length() == 1) {
+                hexString.append('0');
+            }
+            hexString.append(hex);
+        }
+        return hexString.toString();
+    }
+
+    public String getWorldId() {
+        return getWorldId(this);
+    }
+
+    public static String getWorldId(WorldIdentifier identifier) {
+        String data = identifier.biomeSeed + identifier.key.toString();
+        try {
+            return bytesToHex(MessageDigest.getInstance("SHA-256").digest(data.getBytes())).substring(0, 32);
+        } catch (
+                NoSuchAlgorithmException e) {
+            throw new RuntimeException(e);
+        }
     }
 }
